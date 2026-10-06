@@ -104,7 +104,7 @@ resource "aws_lb_target_group" "app" {
 
   health_check {
     enabled             = true
-    path                = "/"
+    path                = "/health"
     protocol            = "HTTP"
     matcher             = "200-399"
     interval            = 10
@@ -163,7 +163,7 @@ resource "aws_ecs_task_definition" "app" {
       healthCheck = {
         command = [
           "CMD-SHELL",
-          "wget -q -O - http://127.0.0.1/ >/dev/null 2>&1 || exit 1"
+          "wget -q -O - http://127.0.0.1/health >/dev/null 2>&1 || exit 1"
         ]
 
         interval    = 10
