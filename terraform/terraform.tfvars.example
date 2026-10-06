@@ -1,0 +1,12 @@
+aws_region = "ap-south-1"
+
+project_name = "zero-touch"
+
+github_owner = "YOUR_GITHUB_USERNAME"
+
+github_repository = "infra-as-code-pipeline"
+
+github_oidc_provider_arn = "arn:aws:iam::YOUR_ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
+
+github_owner_id      = "YOUR_GITHUB_OWNER_ID"
+github_repository_id = "YOUR_GITHUB_REPOSITORY_ID"

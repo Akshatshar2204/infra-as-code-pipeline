@@ -1,0 +1,428 @@
+name: Zero-Touch Deployment
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-staging:
+    if: github.event_name == 'pull_request'
+    name: Test and Deploy to Staging
+    runs-on: ubuntu-latest
+
+    environment:
+      name: staging
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+    steps:
+
+      # 1. Get the repository code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Install Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # 3. Check Terraform formatting
+      - name: Terraform format check
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+
+      # 4. Initialize Terraform without using AWS backend
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init -backend=false
+
+      # 5. Check Terraform configuration
+      - name: Terraform validate
+        working-directory: terraform
+        run: terraform validate
+
+      # 6. Install TFLint
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v6
+
+      # 7. Initialize TFLint
+      - name: Initialize TFLint
+        working-directory: terraform
+        run: tflint --init
+
+      # 8. Run TFLint
+      - name: Run TFLint
+        working-directory: terraform
+        run: tflint --recursive
+
+      # 9. Install Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 10. Install application dependencies
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt
+          pip install pytest
+
+      # 11. Run tests
+      - name: Run application tests
+        run: |
+          python -m pytest app/tests -v
+
+      # 12. Configure AWS using GitHub OIDC
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-Staging
+
+      # 13. Check which AWS identity GitHub received
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      # 14. Login to ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 15. Build and push Docker image
+      - name: Build and push Docker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+          docker build -t "$IMAGE" ./app
+          docker push "$IMAGE"
+
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      # 16. Save the current working task definition
+      - name: Get current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_FAMILY" \
+            --query taskDefinition \
+            > task-definition.json
+
+      # 17. Replace the Nginx image with our Flask image
+      - name: Render new task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: app
+          image: ${{ steps.build-image.outputs.image }}
+
+      # 18. Deploy to ECS staging
+      - name: Deploy to ECS staging
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-max-delay-seconds: 15
+
+      # 19. Confirm ECS service is stable
+      - name: Check ECS deployment
+        run: |
+          aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].{Status:status,Desired:desiredCount,Running:runningCount,Pending:pendingCount}' \
+            --output table
+
+  deploy-production:
+    if: github.event_name == 'push'
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    concurrency:
+      group: production
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform format check
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v6
+
+      - name: Initialize TFLint
+        working-directory: terraform
+        run: tflint --init
+
+      - name: Run TFLint
+        working-directory: terraform
+        run: tflint --recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt
+          pip install pytest
+
+      - name: Run application tests
+        run: |
+          python -m pytest app/tests -v
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-Production
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+          docker build -t "$IMAGE" ./app
+          docker push "$IMAGE"
+
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Save previous task definition
+        id: previous-task
+        run: |
+          PREVIOUS_TASK_DEF=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "previous=$PREVIOUS_TASK_DEF" >> "$GITHUB_OUTPUT"
+          echo "Previous task definition: $PREVIOUS_TASK_DEF"
+
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_FAMILY" \
+            --query taskDefinition \
+            > task-definition.json
+
+      - name: Render new task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: app
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy to ECS production
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: false
+
+      - name: Monitor deployment for 5 minutes and rollback on failure
+        env:
+          PREVIOUS_TASK_DEF: ${{ steps.previous-task.outputs.previous }}
+          NEW_TASK_DEF: ${{ steps.deploy.outputs.task-definition-arn }}
+        run: |
+          echo "Previous task definition: $PREVIOUS_TASK_DEF"
+          echo "New task definition: $NEW_TASK_DEF"
+
+          TG_ARN=$(aws elbv2 describe-target-groups \
+            --query "TargetGroups[?TargetGroupName=='${ECS_SERVICE}-tg'].TargetGroupArn | [0]" \
+            --output text)
+
+          echo "Target group: $TG_ARN"
+
+          DEPLOYMENT_SUCCESS=false
+
+          for i in $(seq 1 30); do
+            ROLLOUT_STATE=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --query "services[0].deployments[?taskDefinition=='$NEW_TASK_DEF'].rolloutState | [0]" \
+              --output text)
+
+            RUNNING=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --query 'services[0].runningCount' \
+              --output text)
+
+            DESIRED=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --query 'services[0].desiredCount' \
+              --output text)
+
+            UNHEALTHY=$(aws elbv2 describe-target-health \
+              --target-group-arn "$TG_ARN" \
+              --query "length(TargetHealthDescriptions[?TargetHealth.State=='unhealthy'])" \
+              --output text)
+
+            echo "[$i/30] rollout=$ROLLOUT_STATE running=$RUNNING desired=$DESIRED unhealthy=$UNHEALTHY"
+
+            if [ "$ROLLOUT_STATE" = "FAILED" ]; then
+              echo "Deployment reported FAILED."
+              break
+            fi
+
+            if [ "$ROLLOUT_STATE" = "COMPLETED" ] && \
+               [ "$RUNNING" = "$DESIRED" ] && \
+               [ "$UNHEALTHY" = "0" ]; then
+              DEPLOYMENT_SUCCESS=true
+              echo "Production deployment is healthy."
+              break
+            fi
+
+            sleep 10
+          done
+
+          if [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
+            exit 0
+          fi
+
+          echo "Production deployment failed or did not become healthy within 5 minutes."
+          echo "Rolling back to: $PREVIOUS_TASK_DEF"
+
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$PREVIOUS_TASK_DEF" \
+            --force-new-deployment
+
+          ROLLBACK_SUCCESS=false
+
+          for i in $(seq 1 30); do
+            RB_STATE=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --query "services[0].deployments[?taskDefinition=='$PREVIOUS_TASK_DEF'].rolloutState | [0]" \
+              --output text)
+
+            RB_RUNNING=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --query 'services[0].runningCount' \
+              --output text)
+
+            RB_DESIRED=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --query 'services[0].desiredCount' \
+              --output text)
+
+            echo "Rollback [$i/30] state=$RB_STATE running=$RB_RUNNING desired=$RB_DESIRED"
+
+            if [ "$RB_STATE" = "COMPLETED" ] && [ "$RB_RUNNING" = "$RB_DESIRED" ]; then
+              ROLLBACK_SUCCESS=true
+              echo "Rollback completed successfully."
+              break
+            fi
+
+            sleep 2
+          done
+
+          if [ "$ROLLBACK_SUCCESS" = "true" ]; then
+            echo "Rollback succeeded, but the deployment is marked failed as required."
+          else
+            echo "Rollback did not become stable within 60 seconds."
+          fi
+
+          exit 1
+
+      - name: Verify production application
+        if: success()
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?LoadBalancerName=='${ECS_CLUSTER}-alb'].DNSName | [0]" \
+            --output text)
+
+          echo "Production ALB: http://$ALB_DNS"
+
+          curl --fail --silent --show-error \
+            "http://$ALB_DNS/"
+
+          echo
+
+          curl --fail --silent --show-error \
+            "http://$ALB_DNS/health"
+
+          echo
+
+      - name: Show final ECS service
+        if: always()
+        run: |
+          aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].{Status:status,Desired:desiredCount,Running:runningCount,Pending:pendingCount,TaskDefinition:taskDefinition}' \
+            --output table
+
