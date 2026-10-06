@@ -134,6 +134,18 @@ resource "aws_iam_policy" "github_deploy" {
         Resource = "*"
       },
       {
+        Sid    = "ElbHealthMonitoring"
+        Effect = "Allow"
+
+        Action = [
+          "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:DescribeTargetHealth",
+          "elasticloadbalancing:DescribeLoadBalancers"
+        ]
+
+        Resource = "*"
+      },
+      {
         Sid    = "PassEcsRoles"
         Effect = "Allow"
 
