@@ -163,7 +163,7 @@ resource "aws_ecs_task_definition" "app" {
       healthCheck = {
         command = [
           "CMD-SHELL",
-          "wget -q -O - http://127.0.0.1/health >/dev/null 2>&1 || exit 1"
+          "wget -q -O - http://127.0.0.1${var.environment == "production" ? "/" : "/health"} >/dev/null 2>&1 || exit 1"
         ]
 
         interval    = 10
