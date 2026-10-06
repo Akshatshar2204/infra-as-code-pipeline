@@ -104,7 +104,7 @@ resource "aws_lb_target_group" "app" {
 
   health_check {
     enabled             = true
-    path                = "/health"
+    path                = var.environment == "production" ? "/" : "/health"
     protocol            = "HTTP"
     matcher             = "200-399"
     interval            = 10
