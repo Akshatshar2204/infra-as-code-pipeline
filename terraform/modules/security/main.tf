@@ -178,7 +178,7 @@ resource "aws_iam_role" "github_deploy" {
           }
 
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_owner}/${var.github_repository}:environment:${var.environment}"
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repository}@${var.github_repository_id}:environment:${var.environment}"
           }
         }
       }

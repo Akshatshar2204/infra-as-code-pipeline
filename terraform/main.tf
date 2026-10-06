@@ -81,6 +81,8 @@ module "security" {
   github_repository        = var.github_repository
   github_oidc_provider_arn = var.github_oidc_provider_arn
   ecr_repository_arn       = aws_ecr_repository.app.arn
+  github_owner_id          = var.github_owner_id
+  github_repository_id     = var.github_repository_id
 }
 
 module "compute" {

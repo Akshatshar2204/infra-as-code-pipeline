@@ -25,3 +25,11 @@ variable "github_oidc_provider_arn" {
 variable "ecr_repository_arn" {
   type = string
 }
+
+variable "github_owner_id" {
+  type = string
+}
+
+variable "github_repository_id" {
+  type = string
+}

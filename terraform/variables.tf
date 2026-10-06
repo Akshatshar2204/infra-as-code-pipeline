@@ -24,3 +24,11 @@ variable "bootstrap_image" {
   type    = string
   default = "nginx:alpine"
 }
+
+variable "github_owner_id" {
+  type = string
+}
+
+variable "github_repository_id" {
+  type = string
+}
